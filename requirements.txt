@@ -1,0 +1,4 @@
+ibis-framework[snowflake]
+plotnine
+posit-sdk
+shiny

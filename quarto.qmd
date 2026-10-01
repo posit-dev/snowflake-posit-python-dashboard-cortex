@@ -1,0 +1,156 @@
+---
+title: "Build and Deploy an Interactive Python Dashboard with the Posit Team Native App and Snowflake Cortex AI"
+format: html
+editor:
+  render-on-save: false
+knitr:
+  opts_chunk:
+    chunk_output_type: console
+execute:
+  echo: true
+  warning: false
+  error: false
+---
+
+This document accompanies the Snowflake Guide of the same name. It walks through:
+
+- Connecting to the Home Mortgage Disclosure Act (HMDA) data in `SNOWFLAKE_PUBLIC_DATA_FREE` with Ibis, using Workbench-managed Snowflake credentials
+- Exploring that data with Posit Assistant, backed by a Snowflake Cortex model
+- Building an interactive Shiny for Python dashboard over the same table
+- Deploying the dashboard to Posit Connect so that it runs under each viewer's own Snowflake credentials
+
+## Install the dependencies
+
+Run this once in the terminal, in a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+## Connect to Snowflake data
+
+`ibis.snowflake.connect()` picks up the Workbench-managed credentials through the
+`workbench` entry in `connections.toml`, so no account, user, or password appears
+in this file.
+
+```{python}
+import ibis
+
+con = ibis.snowflake.connect(
+    warehouse="DEFAULT_WH",
+    database="SNOWFLAKE_PUBLIC_DATA_FREE",
+    schema="PUBLIC_DATA_FREE",
+    connection_name="workbench",
+)
+
+mortgage_data = con.table("HOME_MORTGAGE_DISCLOSURE_ATTRIBUTES")
+mortgage_data.schema()
+```
+
+`mortgage_data` is a lazy table expression. Nothing has been pulled into Python
+yet: Ibis translates each operation to SQL and Snowflake does the work.
+
+```{python}
+ibis.options.interactive = True
+
+mortgage_data.select("YEAR", "STATE_NAME", "LOAN_TYPE", "LOAN_AMOUNT").head(10)
+```
+
+## Explore the data with Posit Assistant
+
+This step is interactive, in the Posit Assistant pane rather than in a chunk.
+Because Posit Assistant sees the variables in the live Python session, `con` and
+`mortgage_data` above are already part of its context. Prompts to try:
+
+```
+Summarize the structure of the mortgage_data table
+```
+
+```
+Explore the relationship between loan amounts and property types
+```
+
+```
+How do loan approval rates vary across states? Push the work down to Snowflake.
+```
+
+```
+Check mortgage_data for missing values and data quality issues
+```
+
+## A first aggregate
+
+The dashboard's metrics are computed in the database, not in Python. This is the
+same expression the app uses.
+
+```{python}
+(
+    mortgage_data.filter(mortgage_data.STATE_NAME == "California")
+    .aggregate(
+        n=lambda t: t.count(),
+        avg=lambda t: t.LOAN_AMOUNT.mean(),
+        total=lambda t: t.LOAN_AMOUNT.sum(),
+    )
+)
+```
+
+To see the SQL Ibis generates:
+
+```{python}
+ibis.to_sql(
+    mortgage_data.group_by("YEAR").aggregate(count=lambda t: t.count()).order_by("YEAR")
+)
+```
+
+## Assemble the dashboard
+
+The deployable app is `app.py` in this repository, reproduced below. It is not
+executed here.
+
+Two things about its shape are deliberate:
+
+- All credential work happens inside `server()`. On Connect the viewer's token
+  arrives as an HTTP header on the Shiny session, so it cannot be read at import
+  time.
+- Every filter and aggregation stays as an Ibis expression until a `to_pandas()`
+  call at the last possible moment, so Snowflake does the scanning and grouping.
+  The histogram is the exception, and it is explicitly bounded with `limit()`.
+
+```python
+{{< include app.py >}}
+```
+
+Run it locally with:
+
+```bash
+shiny run --reload app.py
+```
+
+## Deploy to Connect
+
+Deploy from Positron with the Posit Publisher extension, including `app.py`,
+`requirements.txt`, and `.python-version`, and attach the Snowflake integration.
+The equivalent from the terminal registers the server once, then deploys:
+
+```bash
+python -m pip install "rsconnect-python[snowflake]"
+
+rsconnect add \
+  --server "https://connect/" \
+  --name "spcs" \
+  --api-key "your-connect-api-key" \
+  --snowflake-connection-name "workbench"
+
+rsconnect deploy shiny -n spcs --entrypoint app:app .
+```
+
+One step is not carried in the bundle: attach the Snowflake OAuth integration on
+the **Runtime** tab of **Content Settings**, under **Integrations**. The
+publisher's integration request only records a request; associating it is a
+separate action in Connect. Attaching it also sets `SNOWFLAKE_ACCOUNT` on the
+content, so no account identifier needs configuring by hand.
+
+`.python-version` travels in the bundle and puts 3.12 in the generated manifest as
+an explicit constraint, which Connect then matches.

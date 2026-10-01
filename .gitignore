@@ -1,0 +1,10 @@
+.Rproj.user
+.Renviron
+.env
+.venv/
+__pycache__/
+*.html
+*_files/
+.quarto/
+.posit/
+rsconnect-python/
