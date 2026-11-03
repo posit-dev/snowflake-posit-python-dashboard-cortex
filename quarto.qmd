@@ -3,9 +3,7 @@ title: "Build and Deploy an Interactive Python Dashboard with the Posit Team Nat
 format: html
 editor:
   render-on-save: false
-knitr:
-  opts_chunk:
-    chunk_output_type: console
+engine: jupyter
 execute:
   echo: true
   warning: false
